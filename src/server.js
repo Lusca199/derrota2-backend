@@ -1,4 +1,4 @@
-// src/server.js (linhas a serem adicionadas/modificadas)
+// src/server.js (versão final com rota de busca)
 
 require('dotenv').config();
 const express = require('express');
@@ -10,7 +10,8 @@ const userRoutes = require('./routes/userRoutes.js');
 const publicationRoutes = require('./routes/publicationRoutes.js');
 const relationshipRoutes = require('./routes/relationshipRoutes.js');
 const reactionRoutes = require('./routes/reactionRoutes.js');
-const commentRoutes = require('./routes/commentRoutes.js'); // <-- 1. IMPORTAR A NOVA ROTA
+const commentRoutes = require('./routes/commentRoutes.js');
+const searchRoutes = require('./routes/searchRoutes.js'); // <-- 1. IMPORTAR A NOVA ROTA
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -30,7 +31,8 @@ app.use('/api/usuarios', userRoutes);
 app.use('/api/publicacoes', publicationRoutes);
 app.use('/api/relationships', relationshipRoutes);
 app.use('/api/reacoes', reactionRoutes);
-app.use('/api/comentarios', commentRoutes); // <-- 2. USAR A NOVA ROTA
+app.use('/api/comentarios', commentRoutes);
+app.use('/api/search', searchRoutes); // <-- 2. USAR A NOVA ROTA
 
 // Inicia o servidor
 app.listen(PORT, () => {
