@@ -1,5 +1,5 @@
 // Ficheiro: Testes/derrota2-backend/src/controllers/notificationController.js
-// Versão com a função de contagem otimizada
+// Versão com a função de contagem otimizada e retorno do origem_id
 
 const db = require('../config/database');
 
@@ -12,7 +12,7 @@ exports.getNotifications = async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT id_notif, destinatario_id, mensagem, tipo, lida, timestamp 
+      `SELECT id_notif, destinatario_id, mensagem, tipo, lida, timestamp, origem_id 
        FROM notificacao 
        WHERE destinatario_id = $1 
        ORDER BY timestamp DESC`,

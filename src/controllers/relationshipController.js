@@ -1,5 +1,5 @@
 // Ficheiro: Testes/derrota2-backend/src/controllers/relationshipController.js
-// Versão com a criação de notificação de "novo seguidor"
+// Versão com a criação de notificação com origem_id
 
 const db = require('../config/database');
 
@@ -20,35 +20,28 @@ exports.followUser = async (req, res) => {
             [seguidorId, seguidoId]
         );
 
-        // --- INÍCIO DA LÓGICA DE NOTIFICAÇÃO ---
-        // Vamos tentar criar a notificação, mas sem bloquear a resposta principal se falhar.
         try {
-            // 1. Verificar se o usuário que FOI seguido quer receber notificações.
             const configResult = await db.query(
                 'SELECT notificacoes_ativas FROM configuracao_usuario WHERE id_usuario = $1',
                 [seguidoId]
             );
 
-            // Prossiga apenas se a configuração for encontrada e estiver ativa
             if (configResult.rows.length > 0 && configResult.rows[0].notificacoes_ativas) {
                 
-                // 2. Obter o nome de quem seguiu para usar na mensagem.
                 const seguidorInfo = await db.query('SELECT nome FROM usuario WHERE id_usuario = $1', [seguidorId]);
                 const nomeSeguidor = seguidorInfo.rows.length > 0 ? seguidorInfo.rows[0].nome : 'Alguém';
-
-                // 3. Criar a mensagem e inserir a notificação.
                 const mensagem = `${nomeSeguidor} começou a seguir você.`;
+
+                // --- ALTERAÇÃO AQUI: Adicionamos a coluna origem_id ---
                 await db.query(
-                    `INSERT INTO notificacao (destinatario_id, mensagem, tipo) VALUES ($1, $2, 'FOLLOW')`,
-                    [seguidoId, mensagem]
+                    `INSERT INTO notificacao (destinatario_id, mensagem, tipo, origem_id) 
+                     VALUES ($1, $2, 'FOLLOW', $3)`,
+                    [seguidoId, mensagem, seguidorId] // O origem_id é o ID de quem seguiu
                 );
             }
         } catch (notificationError) {
-            // Se a notificação falhar, registamos o erro no console, mas não paramos o fluxo.
-            // O usuário foi seguido com sucesso, isso é o mais importante.
             console.error("Falha ao criar notificação de 'seguir':", notificationError);
         }
-        // --- FIM DA LÓGICA DE NOTIFICAÇÃO ---
 
         res.status(201).json({ message: 'Usuário seguido com sucesso!', relation: result.rows[0] });
 

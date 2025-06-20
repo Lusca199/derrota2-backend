@@ -1,4 +1,5 @@
 // src/controllers/commentController.js
+// Versão com notificação de comentário e origem_id
 
 const db = require('../config/database');
 
@@ -7,11 +8,10 @@ const db = require('../config/database');
  * Esta função é protegida e requer que o usuário esteja autenticado.
  */
 exports.createComment = async (req, res) => {
-  const { publicationId } = req.params; // O ID da publicação vem da URL
-  const { texto } = req.body; // O texto do comentário vem do corpo da requisição
-  const autor_id = req.user.id; // O ID do usuário logado vem do middleware de autenticação
+  const { publicationId } = req.params; 
+  const { texto } = req.body; 
+  const commenterId = req.user.id; // Renomeado para clareza: ID de quem está a comentar
 
-  // Validação para garantir que o comentário não esteja vazio
   if (!texto || texto.trim() === '') {
     return res.status(400).json({ error: 'O texto do comentário não pode estar vazio.' });
   }
@@ -22,26 +22,62 @@ exports.createComment = async (req, res) => {
       `INSERT INTO comentario (pub_id, autor_id, texto) 
        VALUES ($1, $2, $3) 
        RETURNING id_coment, texto, criado_em`,
-      [publicationId, autor_id, texto]
+      [publicationId, commenterId, texto]
     );
 
     const novoComentario = result.rows[0];
 
+    // --- INÍCIO DA LÓGICA DE NOTIFICAÇÃO DE COMENTÁRIO ---
+    try {
+        // 1. Encontrar o autor da publicação original
+        const postResult = await db.query('SELECT autor_id FROM publicacao WHERE id_pub = $1', [publicationId]);
+
+        if (postResult.rows.length > 0) {
+            const autorPostId = postResult.rows[0].autor_id;
+
+            // 2. Evitar auto-notificação
+            if (Number(autorPostId) !== Number(commenterId)) {
+                // 3. Verificar preferências de notificação do autor do post
+                const configResult = await db.query(
+                    'SELECT notificacoes_ativas FROM configuracao_usuario WHERE id_usuario = $1',
+                    [autorPostId]
+                );
+
+                if (configResult.rows.length > 0 && configResult.rows[0].notificacoes_ativas) {
+                    // 4. Obter o nome de quem comentou
+                    const commenterInfo = await db.query('SELECT nome FROM usuario WHERE id_usuario = $1', [commenterId]);
+                    const nomeCommenter = commenterInfo.rows[0]?.nome || 'Alguém';
+
+                    // 5. Criar a notificação para o autor do post
+                    const mensagem = `${nomeCommenter} respondeu à sua publicação.`;
+                    // --- ALTERAÇÃO AQUI: Adicionamos a coluna origem_id ---
+                    await db.query(
+                        `INSERT INTO notificacao (destinatario_id, mensagem, tipo, origem_id) 
+                         VALUES ($1, $2, 'REPLY', $3)`,
+                        [autorPostId, mensagem, publicationId] // O origem_id é o ID da publicação comentada
+                    );
+                }
+            }
+        }
+    } catch (notificationError) {
+        console.error("Falha ao criar notificação de 'comentário':", notificationError);
+    }
+    // --- FIM DA LÓGICA DE NOTIFICAÇÃO ---
+
+
     // Para uma melhor experiência no front-end, retornamos o comentário completo
-    // já com os dados do autor, para não precisar de uma nova busca.
-    const autor = await db.query('SELECT nome, foto_perfil_url FROM usuario WHERE id_usuario = $1', [autor_id]);
+    const autor = await db.query('SELECT nome, foto_perfil_url FROM usuario WHERE id_usuario = $1', [commenterId]);
 
     res.status(201).json({
         ...novoComentario,
-        autor_id: autor_id,
+        autor_id: commenterId,
         nome_autor: autor.rows[0].nome,
         autor_foto_perfil_url: autor.rows[0].foto_perfil_url
     });
 
   } catch (error) {
     console.error('Erro ao criar comentário:', error);
-    // Verifica se o erro é por uma publicação que não existe
-    if (error.code === '23503') { // Foreign key violation
+    if (error.code === '23503') { 
         return res.status(404).json({ error: 'Publicação não encontrada.' });
     }
     res.status(500).json({ error: 'Erro interno do servidor.' });
@@ -56,7 +92,6 @@ exports.getCommentsForPublication = async (req, res) => {
   const { publicationId } = req.params;
 
   try {
-    // Busca todos os comentários e junta com a tabela de usuários para pegar nome e foto
     const result = await db.query(
       `SELECT 
             c.id_coment AS id_comentario, 
@@ -68,7 +103,7 @@ exports.getCommentsForPublication = async (req, res) => {
        FROM comentario c
        JOIN usuario u ON c.autor_id = u.id_usuario
        WHERE c.pub_id = $1
-       ORDER BY c.criado_em ASC`, // Ordena do mais antigo para o mais novo
+       ORDER BY c.criado_em ASC`,
       [publicationId]
     );
 
