@@ -1,5 +1,5 @@
 // Ficheiro: Testes/derrota2-backend/src/controllers/publicationController.js
-// Versão FINAL com notificações de menção e CRUD completo de publicações
+// Versão com lógica de feed "Seguindo" e "Para Si"
 
 const db = require('../config/database');
 
@@ -97,42 +97,64 @@ exports.createPublication = async (req, res) => {
   }
 };
 
-// ... as funções getAllPublications, getPublicationById, getPublicationsByUser permanecem inalteradas ...
+// --- FUNÇÃO ATUALIZADA PARA LIDAR COM OS DOIS TIPOS DE FEED ---
 exports.getAllPublications = async (req, res) => {
+  const { feedType } = req.query; // 'following' ou undefined
   const userId = req.user ? req.user.id : null;
+  
+  // A base da nossa consulta SQL é a mesma para ambos os feeds
+  const baseQuery = `
+    SELECT 
+      p.id_pub, p.texto, p.criado_em, 
+      u.id_usuario AS autor_id, u.nome AS nome_autor, u.foto_perfil_url AS autor_foto_perfil_url,
+      m.url AS media_url,
+      (SELECT COUNT(*) FROM reacao r WHERE r.alvo_id = p.id_pub AND r.alvo_tipo = 'POST') AS like_count,
+      EXISTS(SELECT 1 FROM reacao r WHERE r.alvo_id = p.id_pub AND r.usuario_id = $1 AND r.alvo_tipo = 'POST') AS is_liked_by_me,
+      COALESCE(mentions_agg.mencoes, '[]'::json) as mencoes
+    FROM publicacao p 
+    JOIN usuario u ON p.autor_id = u.id_usuario
+    LEFT JOIN midia m ON p.id_pub = m.pub_id
+    LEFT JOIN (
+        SELECT m.pub_id, json_agg(json_build_object('username', split_part(u.email, '@', 1), 'user_id', u.id_usuario)) as mencoes
+        FROM mencao m
+        JOIN usuario u ON m.usuario_mencionado_id = u.id_usuario
+        GROUP BY m.pub_id
+    ) AS mentions_agg ON p.id_pub = mentions_agg.pub_id`;
+  
+  let finalQuery;
+  const params = [userId];
+
+  // Se o tipo de feed for 'following' e o usuário estiver logado...
+  if (feedType === 'following' && userId) {
+    finalQuery = `
+      ${baseQuery}
+      -- Adiciona uma condição para buscar apenas posts de quem o usuário segue
+      WHERE p.autor_id IN (
+        SELECT seguido_id FROM relacao_usuario WHERE seguidor_id = $1 AND bloqueado = FALSE
+      )
+      ORDER BY p.criado_em DESC`;
+  } else {
+    // Caso contrário, usa a lógica original (feed global "Para Si")
+    finalQuery = `
+      ${baseQuery}
+      LEFT JOIN relacao_usuario r_block ON 
+          r_block.bloqueado = TRUE AND (
+              (r_block.seguidor_id = $1 AND r_block.seguido_id = p.autor_id) OR
+              (r_block.seguidor_id = p.autor_id AND r_block.seguido_id = $1)
+          )
+      WHERE r_block.seguidor_id IS NULL
+      ORDER BY p.criado_em DESC`;
+  }
+
   try {
-    const publications = await db.query(
-      `SELECT 
-         p.id_pub, p.texto, p.criado_em, 
-         u.id_usuario AS autor_id, u.nome AS nome_autor, u.foto_perfil_url AS autor_foto_perfil_url,
-         m.url AS media_url,
-         (SELECT COUNT(*) FROM reacao r WHERE r.alvo_id = p.id_pub AND r.alvo_tipo = 'POST') AS like_count,
-         EXISTS(SELECT 1 FROM reacao r WHERE r.alvo_id = p.id_pub AND r.usuario_id = $1 AND r.alvo_tipo = 'POST') AS is_liked_by_me,
-         COALESCE(mentions_agg.mencoes, '[]'::json) as mencoes
-       FROM publicacao p 
-       JOIN usuario u ON p.autor_id = u.id_usuario
-       LEFT JOIN midia m ON p.id_pub = m.pub_id
-       LEFT JOIN (
-            SELECT m.pub_id, json_agg(json_build_object('username', split_part(u.email, '@', 1), 'user_id', u.id_usuario)) as mencoes
-            FROM mencao m
-            JOIN usuario u ON m.usuario_mencionado_id = u.id_usuario
-            GROUP BY m.pub_id
-       ) AS mentions_agg ON p.id_pub = mentions_agg.pub_id
-       LEFT JOIN relacao_usuario r_block ON 
-            r_block.bloqueado = TRUE AND (
-                (r_block.seguidor_id = $1 AND r_block.seguido_id = p.autor_id) OR
-                (r_block.seguidor_id = p.autor_id AND r_block.seguido_id = $1)
-            )
-       WHERE r_block.seguidor_id IS NULL
-       ORDER BY p.criado_em DESC`,
-       [userId]
-    );
+    const publications = await db.query(finalQuery, params);
     res.status(200).json(publications.rows);
   } catch (error) {
     console.error("Erro ao buscar publicações:", error);
     res.status(500).json({ error: 'Erro interno do servidor ao buscar as publicações.' });
   }
 };
+
 exports.getPublicationById = async (req, res) => {
   const { id } = req.params;
   const userId = req.user ? req.user.id : null;
@@ -196,8 +218,6 @@ exports.getPublicationsByUser = async (req, res) => {
   }
 };
 
-
-// --- FUNÇÃO DE ATUALIZAÇÃO IMPLEMENTADA ---
 exports.updatePublication = async (req, res) => {
   const { id: pub_id } = req.params;
   const { texto } = req.body;
@@ -218,11 +238,7 @@ exports.updatePublication = async (req, res) => {
     if (result.rowCount === 0) {
         return res.status(403).json({ error: 'Não autorizado a editar esta publicação ou publicação não encontrada.' });
     }
-
-    // Opcional: Re-processar menções após a edição.
-    // Por simplicidade, vamos omitir por agora, mas poderia ser adicionado aqui.
-
-    // Para consistência, retornamos o mesmo formato de objeto da criação
+    
     const authorResult = await db.query('SELECT nome, foto_perfil_url FROM usuario WHERE id_usuario = $1', [user_id]);
     const updatedPublication = {
         ...result.rows[0],
@@ -237,25 +253,21 @@ exports.updatePublication = async (req, res) => {
   }
 };
 
-// --- FUNÇÃO DE APAGAR IMPLEMENTADA ---
 exports.deletePublication = async (req, res) => {
   const { id: pub_id } = req.params;
   const user_id = req.user.id;
 
   try {
-      // A consulta DELETE verifica se o id da publicação E o id do autor correspondem.
-      // Isto previne que um usuário apague a publicação de outro.
       const result = await db.query(
           'DELETE FROM publicacao WHERE id_pub = $1 AND autor_id = $2',
           [pub_id, user_id]
       );
 
-      // Se rowCount for 0, a publicação não foi encontrada ou o usuário não era o autor.
       if (result.rowCount === 0) {
           return res.status(403).json({ error: 'Não autorizado a apagar esta publicação ou publicação não encontrada.' });
       }
 
-      res.status(204).send(); // 204 No Content é a resposta padrão para um delete bem-sucedido.
+      res.status(204).send();
   } catch (error) {
       console.error("Erro ao apagar publicação:", error);
       res.status(500).json({ error: 'Erro interno do servidor.' });
