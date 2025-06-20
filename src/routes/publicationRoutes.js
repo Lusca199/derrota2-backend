@@ -1,19 +1,20 @@
-// src/routes/publicationRoutes.js (versão com upload de mídia)
+// Ficheiro: Testes/derrota2-backend/src/routes/publicationRoutes.js
+// Adicionada a nova rota para buscar publicações de um usuário
 
 const express = require('express');
 const router = express.Router();
 const publicationController = require('../controllers/publicationController');
 const authMiddleware = require('../middleware/authMiddleware');
-
-// --- 1. IMPORTAR MULTER E PATH ---
+const optionalAuthMiddleware = require('../middleware/optionalAuthMiddleware.js');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 
-// --- 2. CONFIGURAR O ARMAZENAMENTO PARA MÍDIAS DE PUBLICAÇÃO ---
-// É uma boa prática guardar mídias de publicação numa pasta separada das fotos de perfil.
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'public/media/'); // Nova pasta para mídias
+    const uploadPath = 'public/media/';
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -25,25 +26,28 @@ const upload = multer({ storage: mediaStorage });
 
 // --- ROTAS CRUD PARA PUBLICAÇÕES ---
 
-// Read (Ler todas as publicações) - Rota Pública
-router.get('/', publicationController.getAllPublications);
+// GET /api/publicacoes/ -> Ler todas as publicações (feed)
+router.get('/', optionalAuthMiddleware, publicationController.getAllPublications);
 
-// Read (Ler uma única publicação)
+// --- NOVA ROTA ADICIONADA AQUI ---
+// GET /api/publicacoes/user/:userId -> Ler todas as publicações de um usuário específico
+router.get('/user/:userId', optionalAuthMiddleware, publicationController.getPublicationsByUser);
+
+// GET /api/publicacoes/:id -> Ler uma única publicação
 router.get('/:id', authMiddleware, publicationController.getPublicationById);
 
-// Create (Criar publicação) - Rota Protegida com Middleware de Upload
-// --- 3. ADICIONAR O MIDDLEWARE DE UPLOAD AQUI ---
+// POST /api/publicacoes/ -> Criar publicação
 router.post(
-    '/', 
-    authMiddleware, 
-    upload.single('publicationMedia'), // O nome 'publicationMedia' é importante!
+    '/',
+    authMiddleware,
+    upload.single('publicationMedia'),
     publicationController.createPublication
 );
 
-// Update (Atualizar publicação) - Rota Protegida
+// PUT /api/publicacoes/:id -> Atualizar publicação
 router.put('/:id', authMiddleware, publicationController.updatePublication);
 
-// Delete (Apagar publicação) - Rota Protegida
+// DELETE /api/publicacoes/:id -> Apagar publicação
 router.delete('/:id', authMiddleware, publicationController.deletePublication);
 
 

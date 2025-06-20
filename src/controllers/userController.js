@@ -1,12 +1,12 @@
-// src/controllers/userController.js (versão com recuperação de senha)
+// Ficheiro: Testes/derrota2-backend/src/controllers/userController.js
+// Versão final com verificação de bloqueio no perfil
 
 const db = require('../config/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto'); // Módulo para gerar tokens seguros
+const crypto = require('crypto');
 
-// ... (as funções registerUser, loginUser, getUserProfile, updateUserProfilePicture, updateUserProfile continuam as mesmas)
-// Lógica para o cadastro de um novo usuário
+// As outras funções (registerUser, loginUser, etc.) permanecem inalteradas
 exports.registerUser = async (req, res) => {
   const { nome, email, senha, telefone, data_nasc, biografia } = req.body;
   try {
@@ -31,7 +31,6 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-// Lógica para o login do usuário
 exports.loginUser = async (req, res) => {
   const { email, senha } = req.body;
   try {
@@ -56,26 +55,65 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// Lógica para buscar o perfil de um único usuário (versão atualizada com contagens)
+
+// Ficheiro: Testes/derrota2-backend/src/controllers/userController.js
+// Substitua APENAS a função getUserProfile
+
+// Lógica para buscar o perfil de um único usuário (VERSÃO FINAL E CORRIGIDA)
 exports.getUserProfile = async (req, res) => {
+  // ID do usuário logado (pode ser nulo)
+  const requesterId = req.user ? req.user.id : null;
+  // ID do perfil que está a ser visitado
+  const { userId: profileId } = req.params;
+
   try {
-    const { userId } = req.params;
     const result = await db.query(
-      `SELECT id_usuario, nome, email, biografia, localizacao, foto_perfil_url, criado_em,
-        (SELECT COUNT(*) FROM relacao_usuario WHERE seguido_id = $1) AS followers_count,
-        (SELECT COUNT(*) FROM relacao_usuario WHERE seguidor_id = $1) AS following_count
-       FROM usuario WHERE id_usuario = $1`, [userId] );
+      `SELECT
+         u.id_usuario, u.nome, u.email, u.biografia, u.localizacao, u.foto_perfil_url, u.criado_em,
+         -- Subquery para contar seguidores
+         (SELECT COUNT(*) FROM relacao_usuario WHERE seguido_id = u.id_usuario AND bloqueado = FALSE) AS followers_count,
+         -- Subquery para contar quantos ele segue
+         (SELECT COUNT(*) FROM relacao_usuario WHERE seguidor_id = u.id_usuario AND bloqueado = FALSE) AS following_count,
+         -- Subquery para verificar se existe um bloqueio entre o requisitante e o perfil
+         EXISTS (
+             SELECT 1 FROM relacao_usuario r
+             WHERE r.bloqueado = TRUE AND (
+                 (r.seguidor_id = $2 AND r.seguido_id = $1) OR
+                 (r.seguidor_id = $1 AND r.seguido_id = $2)
+             )
+         ) AS is_blocked_by_me
+       FROM usuario u
+       WHERE u.id_usuario = $1`,
+      [profileId, requesterId]
+    );
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
-    res.status(200).json(result.rows[0]);
+
+    const profile = result.rows[0];
+
+    // Se o perfil estiver bloqueado, retornamos apenas a informação essencial
+    if (profile.is_blocked_by_me) {
+      return res.status(200).json({
+        id_usuario: profile.id_usuario,
+        nome: profile.nome,
+        email: profile.email,
+        foto_perfil_url: profile.foto_perfil_url,
+        is_blocked_by_me: true
+      });
+    }
+
+    // Se não, retornamos o perfil completo
+    res.status(200).json(profile);
+
   } catch (error) {
-    console.error(error);
+    console.error("Erro ao buscar perfil:", error);
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };
 
-// Lógica para atualizar a foto de perfil do usuário
+// As outras funções (updateUserProfilePicture, etc.) permanecem inalteradas
 exports.updateUserProfilePicture = async (req, res) => {
   const userId = req.user.id;
   if (!req.file) { return res.status(400).json({ error: 'Nenhum ficheiro foi enviado.' }); }
@@ -90,7 +128,6 @@ exports.updateUserProfilePicture = async (req, res) => {
   }
 };
 
-// Lógica para um usuário ATUALIZAR os seus próprios dados de perfil
 exports.updateUserProfile = async (req, res) => {
   const userId = req.user.id;
   const { nome, biografia, localizacao } = req.body;
@@ -110,88 +147,51 @@ exports.updateUserProfile = async (req, res) => {
   }
 };
 
-// ----- ADICIONE AS NOVAS FUNÇÕES A PARTIR DAQUI -----
-
-/**
- * Lógica para solicitar uma redefinição de senha.
- * Passo 1 do fluxo de recuperação.
- */
 exports.requestPasswordReset = async (req, res) => {
     const { email } = req.body;
     try {
         const userResult = await db.query('SELECT id_usuario FROM usuario WHERE email = $1', [email]);
         if (userResult.rows.length === 0) {
-            // **IMPORTANTE**: Não informamos ao front-end que o email não foi encontrado.
-            // Isso é uma medida de segurança para evitar que maus atores descubram quais emails estão cadastrados.
-            // Apenas retornamos uma mensagem genérica de sucesso.
             return res.status(200).json({ message: 'Se um usuário com este e-mail existir, um link de redefinição será enviado.' });
         }
         const userId = userResult.rows[0].id_usuario;
-
-        // Gera um token aleatório e seguro
         const resetToken = crypto.randomBytes(32).toString('hex');
-        
-        // Define um tempo de expiração para o token (e.g., 1 hora)
         const expiration = new Date();
         expiration.setHours(expiration.getHours() + 1);
-
-        // Salva o token na nova tabela, associado ao usuário
         await db.query(
             'INSERT INTO redefinicao_senha (usuario_id, token, expira_em) VALUES ($1, $2, $3)',
             [userId, resetToken, expiration]
         );
-
-        // --- SIMULAÇÃO DE ENVIO DE E-MAIL ---
-        // Num projeto real, aqui você usaria um serviço como Nodemailer, SendGrid, etc.
-        // para enviar um e-mail para o usuário.
         console.log('--- SIMULAÇÃO DE E-MAIL ---');
         console.log(`Token de redefinição para ${email}: ${resetToken}`);
         console.log(`Link para o front-end: http://localhost:5175/resetar-senha?token=${resetToken}`);
         console.log('---------------------------');
-
         res.status(200).json({ message: 'Se um usuário com este e-mail existir, um link de redefinição será enviado.' });
-
     } catch (error) {
         console.error("Erro ao solicitar redefinição de senha:", error);
         res.status(500).json({ error: 'Erro interno do servidor.' });
     }
 };
 
-/**
- * Lógica para efetivamente redefinir a senha.
- * Passo 2 do fluxo de recuperação.
- */
 exports.resetPassword = async (req, res) => {
     const { token, senha } = req.body;
     if (!token || !senha) {
         return res.status(400).json({ error: 'O token e a nova senha são obrigatórios.' });
     }
-
     try {
-        // Busca o token no banco de dados, garantindo que ele não expirou
         const result = await db.query(
             'SELECT * FROM redefinicao_senha WHERE token = $1 AND expira_em > NOW()',
             [token]
         );
-
         if (result.rows.length === 0) {
             return res.status(400).json({ error: 'Token inválido ou expirado.' });
         }
-
         const { usuario_id } = result.rows[0];
-
-        // Criptografa a nova senha
         const salt = await bcrypt.genSalt(10);
         const senha_hash = await bcrypt.hash(senha, salt);
-
-        // Atualiza a senha do usuário na tabela `usuario`
         await db.query('UPDATE usuario SET senha_hash = $1 WHERE id_usuario = $2', [senha_hash, usuario_id]);
-
-        // Remove o token da tabela para que não possa ser reutilizado
         await db.query('DELETE FROM redefinicao_senha WHERE token = $1', [token]);
-        
         res.status(200).json({ message: 'Senha redefinida com sucesso!' });
-
     } catch (error) {
         console.error("Erro ao redefinir senha:", error);
         res.status(500).json({ error: 'Erro interno do servidor.' });
